@@ -1,0 +1,13 @@
+#include "resource.h"
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Icon
+//
+
+// 실행 파일(EXE) 아이콘 + 창/작업표시줄 아이콘
+#define IDI_APPICON 101
+IDI_APPICON ICON "AppIcon.ico"
+
+// 1 is the default resource ID for the manifest when embedded
+1 24 "MoDup.manifest"

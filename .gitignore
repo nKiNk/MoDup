@@ -1,0 +1,25 @@
+# Build artifacts
+# Build artifacts
+*.exe
+!bin/*.exe
+*.obj
+*.res
+*.ilk
+*.pdb
+*.lib
+*.exp
+*.tlog
+*.log
+*.idb
+*.pch
+*.ipch
+
+# Visual Studio user specific files
+*.user
+*.suo
+*.opensdf
+*.sdf
+.vs/
+
+# Runtime configuration (optional, usually local)
+display_config.json
