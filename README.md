@@ -1,51 +1,70 @@
-# ModUp (Monitor Configuration Tool)
+# ModUp
 
-ModUp is a lightweight Windows utility designed to easily save and restore your multi-monitor display configurations. It is particularly useful for users who frequently switch between different desk setups, docking stations, or KVM switches, where Windows often forgets window positions and monitor arrangements.
+ModUp is a lightweight Windows monitor swap utility. The current app does not save and restore full display layouts; instead, it enumerates active displays, lets you pick exactly two, and swaps their display targets through the Windows DisplayConfig API.
 
-## Features
+## Current Behavior
 
-*   **Save Configuration**: Instantly capture the current resolution, position, and orientation of all active monitors.
-*   **Restore Configuration**: Apply the saved settings with a single click to restore your preferred layout.
-*   **Modern UI**: Features a clean, DPI-aware interface with Windows 11-style rounded buttons and hover effects.
-*   **Portable**: Configuration is saved to a local JSON file (`display_config.json`), making it easy to backup or move.
+- Enumerates active displays when the app starts.
+- Shows each display as a checkbox with its display number, monitor name, GDI name, and orientation.
+- Allows up to two displays to be selected at once.
+- Applies the swap when you click `Swap Settings`.
+- Stores the last selected display numbers in `modup_settings.json` next to the executable.
 
 ## Requirements
 
-*   Windows 10 or Windows 11
-*   Visual Studio 2019 or later (for building from source)
-*   C++17 compatible compiler
+- Windows 10 or Windows 11
+- Visual Studio 2022 Build Tools or Visual Studio with C++ build tools
+- C++17 compiler
+- `json.hpp` from [nlohmann/json](https://github.com/nlohmann/json) (already included in this repo)
 
-## Build Instructions
+## Build
 
-1.  Clone this repository or download the source code.
-2.  Ensure you have the `json.hpp` file from [nlohmann/json](https://github.com/nlohmann/json) in the project directory (already included in this repo).
-3.  Open the project in Visual Studio or use the command line compiler `cl.exe`.
-4.  Compile the `MoDup.cpp` file. The code includes necessary pragmas to link against `dwmapi.lib` and `Msimg32.lib`.
+The repo includes `build.bat`, which initializes the Visual C++ environment, compiles `MoDup.rc` into `MoDup.res`, and then builds the executable.
 
-    ```cmd
-    cl /EHsc /std:c++17 MoDup.cpp user32.lib gdi32.lib
-    ```
+```cmd
+build.bat
+```
 
-## Running the Application
+Equivalent manual commands:
 
-A pre-compiled executable is available in the `bin` folder.
+```cmd
+rc /fo MoDup.res MoDup.rc
+cl /EHsc /std:c++17 MoDup.cpp MoDup.res User32.lib Advapi32.lib Gdi32.lib Shell32.lib Ole32.lib dwmapi.lib Msimg32.lib Setupapi.lib /Fe:MoDup.exe
+```
 
-1.  Navigate to the `bin` folder.
-2.  Run `MoDup.exe`.
-3.  The `display_config.json` file will be created in the same directory where the executable is located.
+## Run
 
-## Usage
+A prebuilt executable is kept in `bin/MoDup.exe`.
 
-1.  Run `MoDup.exe`.
-2.  **Save**: Click the **Save** button to store your current monitor layout to `display_config.json`.
-3.  **Restore**: Click the **Restore** button to apply the settings from the JSON file.
-4.  **Exit**: Click **Exit** to close the application.
+1. Run `bin\MoDup.exe`.
+2. The app opens as `Monitor Swap Tool (v3.3)`.
+3. On startup it loads the previous selection from `modup_settings.json` if that file exists.
 
-## Technologies Used
+## Usage Flow
 
-*   C++ (Win32 API)
-*   [nlohmann/json](https://github.com/nlohmann/json) for JSON serialization
-*   GDI for custom UI rendering
+1. Launch `MoDup.exe`.
+2. Select exactly two displays from the list.
+3. Click `Swap Settings`.
+4. If the swap succeeds, the app shows a success message, saves the selected display numbers, and refreshes the display list.
+
+## Files
+
+- `modup_settings.json`: runtime state file containing the last selected display numbers.
+- `bin/MoDup.exe`: prebuilt Windows executable.
+- `display_config.json`: legacy filename from the previous save/restore version; it is not the active runtime settings file for the current app.
+
+## Implementation Notes
+
+- Entry point: `wWinMain` in `MoDup.cpp`
+- UI: Win32 + GDI custom button drawing
+- Display handling: `QueryDisplayConfig` and `SetDisplayConfig`
+- DPI mode: Per-monitor DPI aware v2 via `MoDup.manifest` and `SetProcessDpiAwarenessContext`
+
+## Limitations
+
+- Windows only
+- Swaps exactly two active displays at a time
+- Does not persist or restore a full monitor layout snapshot
 
 ## License
 
