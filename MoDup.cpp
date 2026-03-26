@@ -1,409 +1,305 @@
+#ifndef UNICODE
+#define UNICODE
+#endif
+#ifndef _UNICODE
+#define _UNICODE
+#endif
 #include <windows.h>
 #include <windowsx.h>
 #include <string>
 #include <fstream>
 #include <vector>
-#include <filesystem>
 #include <dwmapi.h>
+#include <algorithm>
 
-#include "Resource.h" // Added for IDI_APPICON
+#include "Resource.h"
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "Msimg32.lib")
 
 #include "json.hpp"
 using json = nlohmann::json;
-namespace fs = std::filesystem;
 
-#define BTN_SAVE    1001
-#define BTN_RESTORE 1002
-#define BTN_EXIT    1003
-
-// ... (Globals remain same)
-// ---- Global ----
-HFONT g_hFontType = NULL;
-HFONT g_hFontBtn  = NULL;
+#define BTN_SWAP    1001
+#define IDC_MONITOR_LIST 2000
 
 // Colors
 const COLORREF COL_BG       = RGB(250, 250, 252);
 const COLORREF COL_BTN_PRI  = RGB(0, 120, 215);
-const COLORREF COL_BTN_SEC  = RGB(225, 225, 225);
 const COLORREF COL_BTN_TXT_P= RGB(255, 255, 255);
-const COLORREF COL_BTN_TXT_S= RGB(50, 50, 50);
 
+struct DisplayInfo {
+    int displayNum;
+    std::wstring gdiName;
+    std::wstring monitorName;
+    LUID adapterId;
+    UINT32 sourceId;
+    UINT32 targetId;
+    DISPLAYCONFIG_ROTATION rotation;
+
+    HWND hCheckbox;
+    bool selected;
+};
+
+// ---- Global ----
+HFONT g_hFontBtn  = NULL;
 HWND g_hBtnHover = NULL;
+std::vector<DisplayInfo> g_displays;
+HWND g_hwndMain = NULL;
 
 // ---- Forward ----
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void InitializeUI(HWND, HINSTANCE);
 void ApplyFontAndTheme(HWND hwnd);
-void SaveCurrentDisplayConfig();
-void RestoreDisplayConfig();
 void DrawButton(LPDRAWITEMSTRUCT pDIS);
+void EnumDisplays();
+void SwapDisplays(HWND hwnd);
 
-// ... (Path Helpers remain same)
-static fs::path GetConfigPath()
-{
-    wchar_t path[MAX_PATH]{};
-    if (GetModuleFileNameW(NULL, path, MAX_PATH) == 0)
-    {
-        return fs::current_path() / "display_config.json";
-    }
-    return fs::path(path).parent_path() / "display_config.json";
+// Config file path
+std::wstring GetConfigPath() {
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    std::wstring exePath(path);
+    size_t pos = exePath.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) exePath = exePath.substr(0, pos);
+    return exePath + L"\\modup_settings.json";
+}
+
+void SaveLastSelection(const std::vector<int>& selectedIndices) {
+    try {
+        json j;
+        j["last_selection"] = selectedIndices;
+        std::ofstream out(GetConfigPath());
+        out << j.dump();
+    } catch (...) {}
+}
+
+std::vector<int> LoadLastSelection() {
+    std::vector<int> result;
+    try {
+        std::ifstream in(GetConfigPath());
+        if (!in.is_open()) return result;
+        json j; in >> j;
+        if (j.contains("last_selection")) {
+            for (auto& item : j["last_selection"]) result.push_back(item.get<int>());
+        }
+    } catch (...) {}
+    return result;
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-    const wchar_t CLASS_NAME[] = L"DisplayConfigTool";
+    const wchar_t CLASS_NAME[] = L"MoDupCCD_v33";
 
     WNDCLASS wc{};
-    wc.style         = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInstance;
     wc.lpszClassName = CLASS_NAME;
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = CreateSolidBrush(COL_BG);
-    wc.hIcon         = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON)); // Restore Icon
-    wc.lpszMenuName  = NULL;
+    wc.hIcon         = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
 
     RegisterClass(&wc);
 
-    int w = 400;
-    int h = 320;
-    
-    int scW = GetSystemMetrics(SM_CXSCREEN);
-    int scH = GetSystemMetrics(SM_CYSCREEN);
-    int x = (scW - w) / 2;
-    int y = (scH - h) / 2;
+    int w = 600, h = 580;
+    int sx = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
+    int sy = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
-    HWND hwnd = CreateWindowEx(
-        WS_EX_APPWINDOW,
-        CLASS_NAME,
-        L"Monitor Config Tool",
+    g_hwndMain = CreateWindowEx(WS_EX_APPWINDOW, CLASS_NAME, L"Monitor Swap Tool (v3.3)",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        x, y, w, h,
-        NULL, NULL, hInstance, NULL
-    );
+        sx, sy, w, h, NULL, NULL, hInstance, NULL);
 
-    if (!hwnd) return 0;
+    if (!g_hwndMain) return 0;
 
-    InitializeUI(hwnd, hInstance);
-    ApplyFontAndTheme(hwnd);
+    EnumDisplays();
+    InitializeUI(g_hwndMain, hInstance);
+    ApplyFontAndTheme(g_hwndMain);
 
-    ShowWindow(hwnd, nCmdShow);
-    UpdateWindow(hwnd);
+    ShowWindow(g_hwndMain, nCmdShow);
+    UpdateWindow(g_hwndMain);
 
     MSG msg{};
-    while (GetMessage(&msg, NULL, 0, 0))
-    {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
+    while (GetMessage(&msg, NULL, 0, 0)) { TranslateMessage(&msg); DispatchMessage(&msg); }
     return 0;
 }
 
-// ... (WndProc remains same)
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    switch (msg)
-    {
-    case WM_COMMAND:
-        switch (LOWORD(wParam))
-        {
-        case BTN_SAVE:
-            SaveCurrentDisplayConfig();
-            break;
-        case BTN_RESTORE:
-            RestoreDisplayConfig();
-            break;
-        case BTN_EXIT:
-            PostQuitMessage(0);
-            break;
-        default:
-            break;
+void EnumDisplays() {
+    g_displays.clear();
+
+    UINT32 pCount, mCount;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pCount, &mCount) != ERROR_SUCCESS) return;
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(pCount);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(mCount);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pCount, paths.data(), &mCount, modes.data(), NULL) != ERROR_SUCCESS) return;
+
+    for (UINT32 i = 0; i < pCount; ++i) {
+        DisplayInfo info{};
+        info.adapterId = paths[i].sourceInfo.adapterId;
+        info.sourceId = paths[i].sourceInfo.id;
+        info.targetId = paths[i].targetInfo.id;
+        info.rotation = paths[i].targetInfo.rotation;
+
+        info.displayNum = paths[i].sourceInfo.id + 1;
+
+        // Get GDI Name
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName{};
+        sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        sourceName.header.size = sizeof(sourceName);
+        sourceName.header.adapterId = paths[i].sourceInfo.adapterId;
+        sourceName.header.id = paths[i].sourceInfo.id;
+        if (DisplayConfigGetDeviceInfo(&sourceName.header) == ERROR_SUCCESS) {
+            info.gdiName = sourceName.viewGdiDeviceName;
         }
-        break;
 
-    case WM_DRAWITEM:
-        DrawButton((LPDRAWITEMSTRUCT)lParam);
-        return TRUE;
+        DISPLAYCONFIG_TARGET_DEVICE_NAME targetName{};
+        targetName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        targetName.header.size = sizeof(targetName);
+        targetName.header.adapterId = paths[i].targetInfo.adapterId;
+        targetName.header.id = paths[i].targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&targetName.header) == ERROR_SUCCESS) {
+            info.monitorName = (wcslen(targetName.monitorFriendlyDeviceName) > 0) ? targetName.monitorFriendlyDeviceName : L"Internal Display";
+        } else {
+            info.monitorName = L"Internal Display";
+        }
 
-    case WM_MOUSEMOVE:
-        {
-            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            HWND hChild = ChildWindowFromPoint(hwnd, pt);
-            if (hChild && hChild != hwnd && hChild != g_hBtnHover)
-            {
-                if (g_hBtnHover) InvalidateRect(g_hBtnHover, NULL, TRUE);
-                g_hBtnHover = hChild;
-                InvalidateRect(g_hBtnHover, NULL, TRUE);
-                
-                TRACKMOUSEEVENT tme;
-                tme.cbSize = sizeof(tme);
-                tme.dwFlags = TME_LEAVE;
-                tme.hwndTrack = hwnd;
-                TrackMouseEvent(&tme);
+        info.selected = false;
+        info.hCheckbox = NULL;
+        g_displays.push_back(info);
+    }
+
+    std::sort(g_displays.begin(), g_displays.end(), [](const DisplayInfo& a, const DisplayInfo& b) {
+        return a.displayNum < b.displayNum;
+    });
+}
+
+void InitializeUI(HWND hwnd, HINSTANCE hInst) {
+    for (int i = 0; i < 50; ++i) { HWND h = GetDlgItem(hwnd, IDC_MONITOR_LIST + i); if (h) DestroyWindow(h); }
+    int startY = 30, chkH = 45, chkW = 520, gap = 12;
+    for (size_t i = 0; i < g_displays.size(); ++i) {
+        std::wstring gdiShort = g_displays[i].gdiName;
+        if (gdiShort.find(L"\\\\.\\") == 0) gdiShort = gdiShort.substr(4);
+        std::wstring rotStr = (g_displays[i].rotation == DISPLAYCONFIG_ROTATION_ROTATE90 || g_displays[i].rotation == DISPLAYCONFIG_ROTATION_ROTATE270) ? L"Portrait" : L"Landscape";
+        std::wstring text = L"Display " + std::to_wstring(g_displays[i].displayNum) + L": " + g_displays[i].monitorName + L" (" + gdiShort + L") - " + rotStr;
+        g_displays[i].hCheckbox = CreateWindowW(L"BUTTON", text.c_str(), WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX | WS_TABSTOP,
+            30, startY + (int)i * (chkH+gap), chkW, chkH, hwnd, (HMENU)(IDC_MONITOR_LIST + i), hInst, NULL);
+    }
+
+    // Load last selection and apply
+    std::vector<int> lastSel = LoadLastSelection();
+    for (int selIdx : lastSel) {
+        for (size_t i = 0; i < g_displays.size(); ++i) {
+            if (g_displays[i].displayNum == selIdx) {
+                CheckDlgButton(hwnd, IDC_MONITOR_LIST + i, BST_CHECKED);
+                break;
             }
         }
-        break;
-    
-    case WM_MOUSELEAVE:
-        if (g_hBtnHover)
-        {
-            HWND hOld = g_hBtnHover;
-            g_hBtnHover = NULL;
-            InvalidateRect(hOld, NULL, TRUE);
+    }
+
+    // Create Swap button with WS_TABSTOP for keyboard focus (Enter/Space)
+    if (!GetDlgItem(hwnd, BTN_SWAP)) {
+        CreateWindowW(L"BUTTON", L"Swap Settings",
+            WS_VISIBLE | WS_CHILD | BS_OWNERDRAW | WS_TABSTOP,
+            (600-240)/2, 450, 240, 60, hwnd, (HMENU)BTN_SWAP, hInst, NULL);
+    }
+}
+
+void ApplyFontAndTheme(HWND hwnd) {
+    int dpi = GetDpiForWindow(hwnd);
+    int hText = MulDiv(-13, dpi, 96);
+    if (g_hFontBtn) DeleteObject(g_hFontBtn);
+    LOGFONTW lf{}; wcscpy_s(lf.lfFaceName, L"Segoe UI"); lf.lfHeight = hText; lf.lfWeight = FW_SEMIBOLD;
+    g_hFontBtn = CreateFontIndirectW(&lf);
+    for (auto& d : g_displays) SendMessage(d.hCheckbox, WM_SETFONT, (WPARAM)g_hFontBtn, TRUE);
+    SendMessage(GetDlgItem(hwnd, BTN_SWAP), WM_SETFONT, (WPARAM)g_hFontBtn, TRUE);
+}
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_COMMAND:
+        if (LOWORD(wParam) == BTN_SWAP) SwapDisplays(hwnd);
+        else if (LOWORD(wParam) >= IDC_MONITOR_LIST && LOWORD(wParam) < IDC_MONITOR_LIST + 50) {
+            int checked = 0;
+            for (int i = 0; i < (int)g_displays.size(); ++i) if (IsDlgButtonChecked(hwnd, IDC_MONITOR_LIST + i) == BST_CHECKED) checked++;
+            if (IsDlgButtonChecked(hwnd, LOWORD(wParam)) == BST_CHECKED && checked > 2) CheckDlgButton(hwnd, LOWORD(wParam), BST_UNCHECKED);
         }
         break;
-
-    case WM_DPICHANGED:
-        {
-            RECT* const prcNewWindow = (RECT*)lParam;
-            SetWindowPos(hwnd,
-                NULL,
-                prcNewWindow->left,
-                prcNewWindow->top,
-                prcNewWindow->right - prcNewWindow->left,
-                prcNewWindow->bottom - prcNewWindow->top,
-                SWP_NOZORDER | SWP_NOACTIVATE);
-             ApplyFontAndTheme(hwnd);
+    case WM_DRAWITEM: DrawButton((LPDRAWITEMSTRUCT)lParam); return TRUE;
+    case WM_ACTIVATE: {
+        HWND hBtn = GetDlgItem(hwnd, BTN_SWAP);
+        if (hBtn) SetFocus(hBtn);
+    } break;
+    case WM_MOUSEMOVE: {
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }; HWND hc = ChildWindowFromPoint(hwnd, pt);
+        if (hc && hc != hwnd && hc != g_hBtnHover) {
+            if (g_hBtnHover) InvalidateRect(g_hBtnHover, NULL, TRUE);
+            g_hBtnHover = hc; InvalidateRect(g_hBtnHover, NULL, TRUE);
+            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0}; TrackMouseEvent(&tme);
         }
-        break;
-
-    case WM_DESTROY:
-        if (g_hFontBtn)  DeleteObject(g_hFontBtn);
-        if (g_hFontType) DeleteObject(g_hFontType);
-        PostQuitMessage(0);
-        break;
-
-    default:
-        return DefWindowProc(hwnd, msg, wParam, lParam);
+    } break;
+    case WM_MOUSELEAVE: if (g_hBtnHover) { HWND hOld = g_hBtnHover; g_hBtnHover = NULL; InvalidateRect(hOld, NULL, TRUE); } break;
+    case WM_DESTROY: if (g_hFontBtn) DeleteObject(g_hFontBtn); PostQuitMessage(0); break;
+    default: return DefWindowProc(hwnd, msg, wParam, lParam);
     }
     return 0;
 }
 
-void InitializeUI(HWND hwnd, HINSTANCE hInst)
-{
-    // Layout - Clean Vertical Stack
-    int btnW = 240;
-    int btnH = 46;
-    int startY = 50;
-    int gapY = 15;
-    
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    int clientW = rc.right - rc.left;
-    int x = (clientW - btnW) / 2;
-
-    // Shortened Text
-    CreateWindowW(L"BUTTON", L"Save", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-        x, startY, btnW, btnH, hwnd, (HMENU)BTN_SAVE, hInst, NULL);
-
-    CreateWindowW(L"BUTTON", L"Restore", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-        x, startY + btnH + gapY, btnW, btnH, hwnd, (HMENU)BTN_RESTORE, hInst, NULL);
-
-    int exitY = startY + (btnH + gapY) * 2 + 10;
-    CreateWindowW(L"BUTTON", L"Exit", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-        x, exitY, btnW, btnH, hwnd, (HMENU)BTN_EXIT, hInst, NULL);
+void DrawButton(LPDRAWITEMSTRUCT pDIS) {
+    HDC hdc = pDIS->hDC; RECT rc = pDIS->rcItem;
+    COLORREF bg = (pDIS->itemState & ODS_SELECTED) ? RGB(0, 100, 190) : (pDIS->hwndItem == g_hBtnHover ? RGB(20, 140, 235) : COL_BTN_PRI);
+    HBRUSH hbr = CreateSolidBrush(bg); FillRect(hdc, &rc, hbr); DeleteObject(hbr);
+    SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, COL_BTN_TXT_P);
+    HGDIOBJ hOf = SelectObject(hdc, g_hFontBtn);
+    wchar_t buf[256]; GetWindowTextW(pDIS->hwndItem, buf, 256);
+    DrawTextW(hdc, buf, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(hdc, hOf);
 }
 
-void ApplyFontAndTheme(HWND hwnd)
-{
-    int iDpi = GetDpiForWindow(hwnd);
-    int hText = MulDiv(-16, iDpi, 96); // Semi-bold 10ptish
+void SwapDisplays(HWND hwnd) {
+    std::vector<int> sels;
+    for (int i = 0; i < (int)g_displays.size(); ++i) if (IsDlgButtonChecked(hwnd, IDC_MONITOR_LIST + i) == BST_CHECKED) sels.push_back(i);
+    if (sels.size() != 2) return;
 
-    if (g_hFontBtn) DeleteObject(g_hFontBtn);
-    
-    LOGFONT lf{};
-    wcscpy_s(lf.lfFaceName, L"Segoe UI"); // Modern Font
-    lf.lfHeight = hText;
-    lf.lfWeight = FW_SEMIBOLD;
-    g_hFontBtn = CreateFontIndirect(&lf);
-}
+    UINT32 pCount, mCount;
+    GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pCount, &mCount);
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(pCount);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(mCount);
+    QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pCount, paths.data(), &mCount, modes.data(), NULL);
 
-void DrawButton(LPDRAWITEMSTRUCT pDIS)
-{
-    HDC hdc = pDIS->hDC;
-    RECT rc = pDIS->rcItem;
-    UINT id = pDIS->CtlID;
-    BOOL isPressed = (pDIS->itemState & ODS_SELECTED);
-    BOOL isHover   = (pDIS->hwndItem == g_hBtnHover);
-
-    // Colors
-    COLORREF bg, txt;
-    if (id == BTN_SAVE) {
-        // Primary Action (Blue)
-        if (isPressed) bg = RGB(0, 100, 190);
-        else if (isHover) bg = RGB(20, 140, 235);
-        else bg = COL_BTN_PRI;
-        txt = COL_BTN_TXT_P;
-    }
-    else {
-        // Secondary Action (Gray/White)
-        if (isPressed) bg = RGB(200, 200, 200);
-        else if (isHover) bg = RGB(242, 242, 242);
-        else bg = RGB(255, 255, 255); // White clean look
-        txt = COL_BTN_TXT_S;
+    int pIdx1 = -1, pIdx2 = -1;
+    for (UINT32 i = 0; i < pCount; ++i) {
+        if (paths[i].sourceInfo.id == g_displays[sels[0]].sourceId && paths[i].sourceInfo.adapterId.LowPart == g_displays[sels[0]].adapterId.LowPart) pIdx1 = i;
+        if (paths[i].sourceInfo.id == g_displays[sels[1]].sourceId && paths[i].sourceInfo.adapterId.LowPart == g_displays[sels[1]].adapterId.LowPart) pIdx2 = i;
     }
 
-    // Double buffering for smooth painting
-    HDC hMemDC = CreateCompatibleDC(hdc);
-    HBITMAP hBm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-    HBITMAP hOldBm = (HBITMAP)SelectObject(hMemDC, hBm);
+    if (pIdx1 != -1 && pIdx2 != -1) {
+        DISPLAYCONFIG_PATH_TARGET_INFO info1 = paths[pIdx1].targetInfo;
+        DISPLAYCONFIG_PATH_TARGET_INFO info2 = paths[pIdx2].targetInfo;
 
-    // Background (Window BG first to clear corners)
-    HBRUSH hBrWin = CreateSolidBrush(COL_BG);
-    FillRect(hMemDC, &rc, hBrWin);
-    DeleteObject(hBrWin);
+        paths[pIdx1].targetInfo.adapterId = info2.adapterId;
+        paths[pIdx1].targetInfo.id = info2.id;
+        paths[pIdx1].targetInfo.modeInfoIdx = info2.modeInfoIdx;
 
-    // Button Rounded Rect
-    HBRUSH hBrBtn = CreateSolidBrush(bg);
-    HPEN hPen = CreatePen(PS_SOLID, 1, (id == BTN_SAVE) ? bg : RGB(200,200,200)); // Border for secondary
-    HGDIOBJ hOldBr = SelectObject(hMemDC, hBrBtn);
-    HGDIOBJ hOldPen = SelectObject(hMemDC, hPen);
+        paths[pIdx2].targetInfo.adapterId = info1.adapterId;
+        paths[pIdx2].targetInfo.id = info1.id;
+        paths[pIdx2].targetInfo.modeInfoIdx = info1.modeInfoIdx;
 
-    RoundRect(hMemDC, rc.left, rc.top, rc.right, rc.bottom, 12, 12); // 12px radius
+        LONG res = SetDisplayConfig(pCount, paths.data(), mCount, modes.data(), SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES);
+        if (res == ERROR_SUCCESS) {
+            // Save last selection
+            std::vector<int> toSave;
+            toSave.push_back(g_displays[sels[0]].displayNum);
+            toSave.push_back(g_displays[sels[1]].displayNum);
+            SaveLastSelection(toSave);
 
-    SelectObject(hMemDC, hOldBr);
-    SelectObject(hMemDC, hOldPen);
-    DeleteObject(hBrBtn);
-    DeleteObject(hPen);
-
-    // Text
-    SetBkMode(hMemDC, TRANSPARENT);
-    SetTextColor(hMemDC, txt);
-    HGDIOBJ hOldFont = SelectObject(hMemDC, g_hFontBtn);
-    
-    wchar_t buf[256];
-    GetWindowTextW(pDIS->hwndItem, buf, 256);
-    DrawTextW(hMemDC, buf, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-    SelectObject(hMemDC, hOldFont);
-
-    // Blit back
-    BitBlt(hdc, 0, 0, rc.right, rc.bottom, hMemDC, 0, 0, SRCCOPY);
-
-    // Clean
-    SelectObject(hMemDC, hOldBm);
-    DeleteObject(hBm);
-    DeleteDC(hMemDC);
-}
-
-// ==============================
-//  Save / Restore (Logic Unchanged)
-// ==============================
-// Helper to convert wstring to utf8 for JSON keys
-static std::string WideToUtf8(const std::wstring& ws)
-{
-    if (ws.empty()) return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
-    std::string out(len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), out.data(), len, nullptr, nullptr);
-    return out;
-}
-
-void SaveCurrentDisplayConfig()
-{
-    json j;
-
-    DISPLAY_DEVICEW dd{};
-    dd.cb = sizeof(dd);
-
-    for (int deviceIndex = 0; EnumDisplayDevicesW(NULL, deviceIndex, &dd, 0); ++deviceIndex)
-    {
-        if (!(dd.StateFlags & DISPLAY_DEVICE_ACTIVE))
-            continue;
-
-        DEVMODEW dm{};
-        dm.dmSize = sizeof(dm);
-
-        if (!EnumDisplaySettingsExW(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm, 0))
-            continue;
-
-        std::string devUtf8 = WideToUtf8(dd.DeviceName);
-
-        j[devUtf8] = {
-            {"x", dm.dmPosition.x},
-            {"y", dm.dmPosition.y},
-            {"width",  dm.dmPelsWidth},
-            {"height", dm.dmPelsHeight},
-            {"orientation", dm.dmDisplayOrientation}
-        };
-    }
-
-    fs::path cfgPath = GetConfigPath();
-    std::ofstream out(cfgPath, std::ios::binary);
-    if (!out.good())
-    {
-        std::wstring msg = L"Failed to create config:\n" + cfgPath.wstring();
-        MessageBoxW(NULL, msg.c_str(), L"Error", MB_ICONERROR);
-        return;
-    }
-
-    out << j.dump(4);
-    out.close();
-
-    std::wstring ok = L"Configuration Saved:\n" + cfgPath.wstring();
-    MessageBoxW(NULL, ok.c_str(), L"Success", MB_OK | MB_ICONINFORMATION);
-}
-
-void RestoreDisplayConfig()
-{
-    fs::path cfgPath = GetConfigPath();
-
-    if (!fs::exists(cfgPath))
-    {
-        std::wstring msg = L"Config file not found:\n" + cfgPath.wstring();
-        MessageBoxW(NULL, msg.c_str(), L"Error", MB_ICONERROR);
-        return;
-    }
-
-    std::ifstream in(cfgPath, std::ios::binary);
-    if (!in.good())
-    {
-        std::wstring msg = L"Failed to open file:\n" + cfgPath.wstring();
-        MessageBoxW(NULL, msg.c_str(), L"Error", MB_ICONERROR);
-        return;
-    }
-
-    json j;
-    try
-    {
-        in >> j;
-    }
-    catch (...)
-    {
-        std::wstring msg = L"JSON Parse Error:\n" + cfgPath.wstring();
-        MessageBoxW(NULL, msg.c_str(), L"Error", MB_ICONERROR);
-        return;
-    }
-
-    for (auto& [device, cfg] : j.items())
-    {
-        std::wstring deviceW;
-        {
-            int wlen = MultiByteToWideChar(CP_UTF8, 0, device.c_str(), (int)device.size(), nullptr, 0);
-            deviceW.resize(wlen);
-            MultiByteToWideChar(CP_UTF8, 0, device.c_str(), (int)device.size(), deviceW.data(), wlen);
+            MessageBoxW(hwnd, L"Swapped successfully!", L"Success", MB_OK);
+            EnumDisplays();
+            InitializeUI(hwnd, GetModuleHandle(NULL));
+            ApplyFontAndTheme(hwnd);
+        } else {
+            std::wstring msg = L"Failed. Code: " + std::to_wstring(res);
+            MessageBoxW(hwnd, msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
         }
-
-        DEVMODEW dm{};
-        dm.dmSize = sizeof(dm);
-        if (!EnumDisplaySettingsExW(deviceW.c_str(), ENUM_CURRENT_SETTINGS, &dm, 0))
-            continue;
-
-        dm.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYORIENTATION;
-        dm.dmPosition.x = cfg.value("x", dm.dmPosition.x);
-        dm.dmPosition.y = cfg.value("y", dm.dmPosition.y);
-        dm.dmPelsWidth  = cfg.value("width",  dm.dmPelsWidth);
-        dm.dmPelsHeight = cfg.value("height", dm.dmPelsHeight);
-        dm.dmDisplayOrientation = cfg.value("orientation", (int)dm.dmDisplayOrientation);
-
-        ChangeDisplaySettingsExW(deviceW.c_str(), &dm, NULL, CDS_UPDATEREGISTRY | CDS_NORESET, NULL);
     }
-
-    ChangeDisplaySettingsExW(NULL, NULL, NULL, 0, NULL);
-    MessageBoxW(NULL, L"Configuration Restored", L"Success", MB_OK | MB_ICONINFORMATION);
 }
