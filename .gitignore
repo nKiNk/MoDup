@@ -23,3 +23,8 @@
 
 # Runtime configuration (optional, usually local)
 display_config.json
+modup_settings.json
+build_log.txt
+debug_log.txt
+display_config copy.json
+display_config - *.json
