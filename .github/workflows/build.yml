@@ -1,0 +1,28 @@
+name: Build MoDup
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build
+        shell: cmd
+        run: |
+          rc /fo MoDup.res MoDup.rc || exit /b 1
+          cl /EHsc /std:c++17 /O2 MoDup.cpp MoDup.res User32.lib Advapi32.lib Gdi32.lib Shell32.lib Ole32.lib dwmapi.lib Msimg32.lib Setupapi.lib /Fe:MoDup.exe
+
+      - name: Upload MoDup.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoDup
+          path: MoDup.exe
